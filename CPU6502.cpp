@@ -3,10 +3,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <cstdint>
 
-using byte = unsigned char; //1 byte, 8 bits
-using word = unsigned short; //2 bytes 16 bits
-using U32 = unsigned int; //4 bytes 32 bits
+using byte = uint8_t; //1 byte, 8 bits
+using word = uint16_t; //2 bytes 16 bits
+using U32 = uint32_t; //4 bytes 32 bits
 
 struct Memory {
 	static constexpr U32 MAX_MEM = 1024 * 64; //number of memory slots
@@ -27,6 +28,12 @@ struct Memory {
 		//make sure that address < MAX_MEM
 		return data[address];
 	} //writes one byte
+
+	void WriteWord(word value, U32 address, U32& cycles) {
+		data[address] = value & 0xFF;
+		data[address+1] = (value >> 8);
+		cycles -= 2;
+	} //writes two bytes
 };
 
 struct CPU {
@@ -65,27 +72,67 @@ struct CPU {
 		mem.Initialise();
 	}
 
-	byte Fetch(U32& cycles, Memory& mem) {
-		byte Data = mem[PC];
+	byte FetchByte(U32& cycles, Memory& mem) {
+		byte data = mem[PC];
 		PC++;
 		cycles--;
-		return Data;
+		return data;
+	}
+
+	byte ReadByte(U32& cycles, byte address, Memory& mem) {
+		byte data = mem[address];
+		cycles--;
+		return data;
+	}//similar to Fetch but doesn't increment program counter.
+
+	byte FetchWord(U32& cycles, Memory& mem) {
+		word data = mem[PC];
+		PC++;
+		data |= (mem[PC] << 8); //Has to do with the 6502 being little endian. Note that a |= b is a = a | b
+		PC++;
+		cycles -= 2;
+		return data;
 	}
 
 	//opcodes
 	static constexpr byte 
-		LDA_IM = 0xa9; //Load accumulator - immediate
+		LDA_IM = 0xA9, //Load accumulator - immediate
+		LDA_ZP = 0xA5, //				  - zero page
+		LDA_ZPX = 0xB5, //				  - zero page, X
+		JSR = 0x20; // Jump to subroutine
+	
+	void LDASetStatus() {
+		ZF = (A == 0);
+		NF = (A & 0b1000000) > 0; //dont really get this.
+	}
 
 	void Execute(U32 cycles, Memory& mem) {
 		while (cycles > 0) {
-			byte Instn = Fetch(cycles, mem); //fetches opcode
+			byte Instn = FetchByte(cycles, mem); //fetches opcode
 			switch (Instn) {
 			case LDA_IM: {
-				byte val = Fetch(cycles, mem); //fetches value
-				A = val;
-				ZF = (A == 0);
-				NF = (A & 0b1000000) > 0; //dont really get this.
+				A = FetchByte(cycles, mem); //fetches value
+				LDASetStatus();
 			} break;
+			case LDA_ZP: {
+				byte ZeroPageAddress = FetchByte(cycles, mem);
+				A = ReadByte(cycles, ZeroPageAddress, mem);
+				LDASetStatus();
+			} break;
+			case LDA_ZPX: {
+				byte ZeroPageAddress = FetchByte(cycles, mem);
+				ZeroPageAddress += X;
+				cycles--;
+				A = ReadByte(cycles, ZeroPageAddress, mem);
+				LDASetStatus();
+			} break;
+			case JSR: {
+				word SubAddress = FetchWord(cycles, mem);
+				mem.WriteWord(PC - 1, SP, cycles);
+				SP++;
+				PC = SubAddress;
+				cycles--;
+			}
 			default: {
 				printf("Instruction not handled %d", Instn);
 			} break;
@@ -98,8 +145,11 @@ int main() {
 	CPU cpu;
 	Memory mem;
 	cpu.Reset(mem);
-	mem[0xFFFC] = CPU::LDA_IM;
-	mem[0xFFFD] = 0x36; //tiny inline program
-	cpu.Execute(2, mem);
+	mem[0xFFFC] = CPU::JSR;
+	mem[0xFFFD] = 0x42;
+	mem[0xFFFE] = 0x42;
+	mem[0x4242] = CPU::LDA_IM;
+	mem[0x4243] = 0x84; //inline prog
+	cpu.Execute(9, mem);
 	return 0;
 }
